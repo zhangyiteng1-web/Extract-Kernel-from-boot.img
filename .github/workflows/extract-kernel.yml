@@ -7,6 +7,20 @@ on:
         description: 'Direct download link to boot.img (e.g., https://example.com/boot.img)'
         required: true
         type: string
+      target_repo:
+        description: 'Target Git repository URL (e.g., https://github.com/user/kernel-binaries.git) – leave empty to skip push'
+        required: false
+        type: string
+      target_branch:
+        description: 'Target branch (default: main)'
+        required: false
+        default: 'main'
+        type: string
+      commit_message:
+        description: 'Commit message for the push'
+        required: false
+        default: 'Update kernel from boot.img'
+        type: string
 
 jobs:
   extract:
@@ -26,15 +40,59 @@ jobs:
       - name: Extract kernel and ramdisk
         run: |
           abootimg -x boot.img
-          # abootimg generates: zImage (kernel) and initramfs.cpio.gz (ramdisk)
           if [ ! -f zImage ]; then
             echo "Error: zImage not found. Extraction may have failed."
             exit 1
           fi
           echo "Kernel extracted successfully."
 
-      - name: Upload kernel as artifact
+      - name: Upload kernel as artifact (always)
         uses: actions/upload-artifact@v4
         with:
           name: kernel-zImage
           path: zImage
+
+      - name: Push kernel to target repository
+        if: github.event.inputs.target_repo != ''
+        env:
+          PUSH_TOKEN: ${{ secrets.PUSH_TOKEN }}  # 需要设置 Personal Access Token
+        run: |
+          # 配置 git 身份
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          # 克隆目标仓库（使用 token 认证）
+          TARGET_REPO="${{ github.event.inputs.target_repo }}"
+          TARGET_BRANCH="${{ github.event.inputs.target_branch }}"
+          COMMIT_MSG="${{ github.event.inputs.commit_message }}"
+
+          # 如果目标仓库 URL 以 https:// 开头，插入 token
+          if [[ "$TARGET_REPO" == https://* ]]; then
+            AUTH_URL="${TARGET_REPO/https:\/\//https://$PUSH_TOKEN@}"
+          else
+            echo "Error: only HTTPS URLs are supported with token authentication"
+            exit 1
+          fi
+
+          git clone --depth 1 --branch "$TARGET_BRANCH" "$AUTH_URL" target_repo || {
+            # 如果分支不存在，尝试创建新分支（基于空仓库或默认分支）
+            echo "Branch $TARGET_BRANCH does not exist, creating empty repo..."
+            git clone "$AUTH_URL" target_repo || exit 1
+            cd target_repo
+            git checkout -b "$TARGET_BRANCH" || exit 1
+            cd ..
+          }
+
+          # 复制内核文件（重命名为有意义的名称，可选）
+          cp zImage target_repo/kernel-$(date +%Y%m%d-%H%M%S).zImage
+          cd target_repo
+
+          # 添加并提交
+          git add .
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "$COMMIT_MSG"
+            git push origin "$TARGET_BRANCH"
+            echo "Kernel pushed successfully to $TARGET_REPO (branch $TARGET_BRANCH)"
+          fi
