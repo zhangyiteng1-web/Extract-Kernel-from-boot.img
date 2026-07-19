@@ -1,0 +1,40 @@
+name: Extract Kernel from boot.img
+
+on:
+  workflow_dispatch:
+    inputs:
+      boot_url:
+        description: 'Direct download link to boot.img (e.g., https://example.com/boot.img)'
+        required: true
+        type: string
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install abootimg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y abootimg
+
+      - name: Download boot.img
+        run: |
+          curl -L -o boot.img "${{ github.event.inputs.boot_url }}"
+          echo "Downloaded boot.img (size: $(du -h boot.img | cut -f1))"
+
+      - name: Extract kernel and ramdisk
+        run: |
+          abootimg -x boot.img
+          # abootimg generates: zImage (kernel) and initramfs.cpio.gz (ramdisk)
+          if [ ! -f zImage ]; then
+            echo "Error: zImage not found. Extraction may have failed."
+            exit 1
+          fi
+          echo "Kernel extracted successfully."
+
+      - name: Upload kernel as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-zImage
+          path: zImage
